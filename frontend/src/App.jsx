@@ -97,7 +97,18 @@ export default function App() {
       }
     } catch (err) {
       console.error("Camera error:", err);
-      setStatusLog("Sensor Standby");
+      // Fallback to whatever camera is available if environment mode fails
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (videoRef.current) {
+          videoRef.current.srcObject = fallbackStream;
+          videoRef.current.setAttribute("playsinline", "true");
+          await videoRef.current.play();
+          setStatusLog("Sensors Synchronized");
+        }
+      } catch (fallbackErr) {
+        setStatusLog("Sensor Standby");
+      }
     }
   };
 
@@ -119,21 +130,29 @@ export default function App() {
     setStatusLog("Scanning Geometry & Surface...");
     playAcousticChime(369.99);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s safety cutoff
+
     try {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // Downscale slightly (640x480) for rapid upload and sub-100ms inference
+      canvas.width = 640;
+      canvas.height = 480;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const base64Image = canvas.toDataURL('image/jpeg', 0.88);
+      const base64Image = canvas.toDataURL('image/jpeg', 0.72);
       setSnapshotPreview(base64Image);
 
-      const response = await fetch('/api/analyze', {
+      const BACKEND_URL = "https://lumivision-api.onrender.com";
+
+      const response = await fetch(`${BACKEND_URL}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: base64Image }),
+        signal: controller.signal
       });
 
+      clearTimeout(timeoutId);
       const resData = await response.json();
 
       if (response.ok && resData.success && resData.data) {
@@ -152,11 +171,18 @@ export default function App() {
           vibe: item.aesthetic_vibe,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }, ...prev.slice(0, 7)]);
+      } else {
+        setStatusLog("Object Not Recognized");
       }
     } catch (err) {
-      console.error(err);
-      setStatusLog("Inference Timeout");
+      console.error("Inference error:", err);
+      if (err.name === 'AbortError') {
+        setStatusLog("Backend Warming Up (Retry)");
+      } else {
+        setStatusLog("Network/CORS Error");
+      }
     } finally {
+      clearTimeout(timeoutId);
       setAnalyzing(false);
     }
   };
@@ -242,7 +268,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Cyber Reticle Optical Viewfinder */}
+      {/* Optical Viewfinder */}
       <div className="relative aspect-[3/4] w-full rounded-3xl overflow-hidden bg-black border border-white/[0.1] shadow-2xl flex items-center justify-center">
         <video
           ref={videoRef}
@@ -269,7 +295,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Polaroid Specimen Thumbnail */}
+        {/* Specimen Thumbnail */}
         {snapshotPreview && (
           <div className="absolute bottom-3 left-3 w-12 h-16 rounded-xl overflow-hidden border border-white/20 shadow-2xl bg-black/60 backdrop-blur-md">
             <img src={snapshotPreview} alt="Captured" className="w-full h-full object-cover" />
